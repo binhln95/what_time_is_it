@@ -134,6 +134,26 @@ npm run web              # http://localhost:8080
 
 Add more shadcn components with `cd web && npx shadcn@latest add <component>`.
 
+## CI/CD (GitHub Actions)
+
+[.github/workflows/ci-cd.yml](.github/workflows/ci-cd.yml):
+
+| Trigger | Jobs |
+|---|---|
+| pull request, push | **backend**: `npm ci`, typecheck, tests, `sam validate --lint`, `sam build` - **web**: lint, build |
+| push to `main` / manual run | the above, then **deploy**: `sam deploy` + `npm run deploy:web` |
+
+AWS access uses **OIDC** - no access keys stored in GitHub. One-time setup:
+
+```bash
+aws cloudformation deploy --stack-name what-time-github-oidc \
+  --template-file ci/github-oidc.yaml --capabilities CAPABILITY_IAM --region ap-southeast-1
+```
+
+Then add the `DeployRoleArn` output as repository **variable** `AWS_ROLE_ARN`
+(Settings -> Secrets and variables -> Actions -> Variables). The role can only be assumed by
+workflow runs on `main` of this repo. Until the variable exists the deploy job is skipped.
+
 ## Cost (free tier)
 
 Lambda, DynamoDB (provisioned 5/5), Cognito, EventBridge Scheduler, SQS, SNS email, CloudFront and

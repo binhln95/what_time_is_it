@@ -1,0 +1,100 @@
+name: CI/CD
+
+# CI  : every pull request and every push -> test/typecheck/lint/build backend and web.
+# CD  : push to main (or manual run on main) -> sam deploy + publish web, after CI passes.
+#       Auth to AWS via OIDC: repo variable AWS_ROLE_ARN = DeployRoleArn output of
+#       ci/github-oidc.yaml (stack what-time-github-oidc). Deploy is skipped while it is unset.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ap-southeast-1
+  SAM_CLI_TELEMETRY: '0'
+
+jobs:
+  backend:
+    name: Backend - test, typecheck, SAM build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+      - run: sam validate --lint --region "$AWS_REGION"
+      - run: npm run build # sam build via npm so the local esbuild is on PATH
+
+  web:
+    name: Web - lint, build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+
+  deploy:
+    name: Deploy to AWS
+    needs: [backend, web]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.AWS_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # needed to request the OIDC token
+    concurrency:
+      group: deploy-main
+      cancel-in-progress: false # never cancel a CloudFormation update halfway
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+      - run: npm ci
+      - run: npm ci --prefix web
+      - uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy backend (sam)
+        run: |
+          npm run build
+          sam deploy --no-confirm-changeset --no-fail-on-empty-changeset
+
+      - name: Deploy web
+        run: npm run deploy:web
+
+      - name: Summary
+        run: |
+          url=$(aws cloudformation describe-stacks --stack-name what-time \
+            --query "Stacks[0].Outputs[?OutputKey=='WebUrl'].OutputValue" --output text)
+          echo "### Deployed :rocket:" >> "$GITHUB_STEP_SUMMARY"
+          echo "Web: $url" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,63 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  GitHub Actions -> AWS via OIDC (no long-lived access keys).
+  Deploy once:  aws cloudformation deploy --stack-name what-time-github-oidc
+                  --template-file ci/github-oidc.yaml --capabilities CAPABILITY_IAM
+  Then put the DeployRoleArn output into the repo variable AWS_ROLE_ARN.
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Default: binhln95/what_time_is_it
+    Description: owner/repo allowed to assume the deploy role
+  Branch:
+    Type: String
+    Default: main
+    Description: only workflow runs on this branch can deploy
+  CreateOidcProvider:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+    Description: false if token.actions.githubusercontent.com already exists in this account
+
+Conditions:
+  CreateProvider: !Equals [!Ref CreateOidcProvider, 'true']
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: !Sub Assumed by GitHub Actions in ${GitHubRepo} (${Branch}) to deploy what-time
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - CreateProvider
+                - !Ref GitHubOidcProvider
+                - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                # Only pushes to this branch of this repo - not PRs, not forks, not other branches.
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:ref:refs/heads/${Branch}
+      # SAM creates IAM roles, Lambda, API Gateway, Cognito, DynamoDB, SQS, SNS, Scheduler,
+      # Amplify, CloudFront... Admin keeps this sample simple; the trust policy above is what
+      # limits who can use it. Tighten to a custom policy for real projects.
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AdministratorAccess
+
+Outputs:
+  DeployRoleArn:
+    Description: Set as GitHub repo variable AWS_ROLE_ARN
+    Value: !GetAtt DeployRole.Arn
