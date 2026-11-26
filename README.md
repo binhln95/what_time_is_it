@@ -3,16 +3,16 @@
 World clock & meeting reminder, built on AWS serverless (mostly always-free services).
 
 ```
-Browser ──▶ CloudFront ──▶ S3 (web tĩnh)
+Browser ──▶ Amplify Hosting (or CloudFront + S3, see WebHosting) ──▶ web (React)
    │
    │  1. Login ──▶ Cognito Hosted UI (OAuth2 code + PKCE) ──▶ ID token (JWT)
    │
    └──HTTPS (Authorization: Bearer <id token>)──▶ API Gateway HTTP API
                                ├─ throttling (rate 10/s, burst 20)
-                               ├─ CORS (CloudFront domain + localhost:8080)
+                               ├─ CORS (web domain + localhost:8080)
                                ├─ JWT Authorizer ◀── Cognito User Pool
                                │
-                               ├─ GET  /time            (public)  ─▶ Lambda time
+                               ├─ GET  /time            (public)  ─▶ Lambda time ─▶ GeoIP layer (DB-IP)
                                ├─ GET  /favorites       (JWT)     ─▶ Lambda favorites ─▶ DynamoDB
                                ├─ PUT  /favorites       (JWT)     ─▶ Lambda favorites
                                ├─ POST /meetings        (JWT)     ─▶ Lambda meetings ─▶ DynamoDB + Scheduler
@@ -30,18 +30,23 @@ what_time/
 ├── samconfig.toml             # deploy config: default = dev (stack what-time), prod (stack what-time-prod)
 ├── src/
 │   ├── functions/             # one file per Lambda
-│   │   ├── time.ts            #   GET /time (public)
+│   │   ├── time.ts            #   GET /time (public): by lat/lon, tz or caller IP
 │   │   ├── favorites.ts       #   GET/PUT /favorites
 │   │   ├── meetings.ts        #   POST/GET /meetings, GET /meetings/{id}
 │   │   └── notify.ts          #   SQS consumer -> SNS email
-│   └── shared/                # time.ts, validation.ts, meeting.ts (pure, tested), http.ts, aws.ts
-├── tests/                     # node:test + tsx
-├── scripts/web.mjs            # writes config.js, uploads web/dist to S3, invalidates CloudFront
+│   └── shared/                # time.ts, validation.ts, meeting.ts (pure, tested), geoip.ts, http.ts, aws.ts
+├── tests/                     # node:test + tsx (geoip tests are skipped until `npm run geoip`)
+├── scripts/
+│   ├── web.mjs                # writes config.js, publishes web/dist (Amplify or S3 + CloudFront)
+│   └── fetch-geoip.mjs        # downloads the DB-IP database into layers/geoip/
+├── layers/geoip/              # GeoIP database for the Lambda layer - downloaded, gitignored
+├── ci/github-oidc.yaml        # one-time stack: GitHub OIDC provider + deploy role
+├── .github/workflows/         # ci-cd.yml (CI + deploy), oidc-debug.yml (manual OIDC check)
 ├── events/event.json          # sample event for local invoke
 └── web/                       # frontend: React 19 + Vite + Tailwind 4 + shadcn/ui (radix, Phosphor icons)
     ├── public/config.js       #   runtime config (API URL, Cognito ids) - generated, gitignored
     └── src/
-        ├── lib/               #   auth.ts (Cognito PKCE), api.ts, time.ts, types.ts, config.ts
+        ├── lib/               #   auth.ts (Cognito PKCE), api.ts, geo.ts, time.ts, types.ts, config.ts
         ├── hooks/             #   use-now, use-session
         └── components/        #   live-clock, world-clock, meetings, meeting-form, ... + ui/ (shadcn)
 ```
@@ -95,8 +100,16 @@ GET  /meetings/{id}  # includes start/end in every participant's timezone
 
 Coordinates are turned into a timezone offline with
 [`@photostructure/tz-lookup`](https://github.com/photostructure/tz-lookup), no external API.
-The web app sends the position only if the user already granted location access or clicks
-**Use my location**, rounded to 2 decimals (~1 km).
+
+The web app's live clock (`web/src/components/live-clock.tsx`) asks for the location on page load
+and calls `/time` with:
+
+1. **GPS allowed** → `?lat=&lon=` (rounded to 2 decimals, ~1 km)
+2. **refused / unavailable** → no parameters, so the server locates the caller **by IP**
+3. **IP not locatable** (server answers `source: "default"`) → `?tz=<device timezone>`
+
+A badge shows which one was used (From your location / From your IP address / From device settings);
+**Use my location** retries GPS.
 
 ## GeoIP (IP -> location)
 
@@ -132,9 +145,10 @@ Use the npm scripts rather than plain `sam build`: they put the local esbuild on
 ## Deploy
 
 ```bash
-npm run deploy           # sam build + sam deploy (dev) + vite build + upload web/dist to S3/CloudFront
+npm run deploy           # fetch GeoIP db + sam build + sam deploy (dev) + vite build + publish web
 npm run deploy:prod      # same for the prod stack
-npm run deploy:web       # only rebuild and upload the frontend
+npm run deploy:web       # only rebuild and publish the frontend
+npm run geoip            # only download this month's GeoIP database
 ```
 
 First deploy creates everything; open the `WebUrl` output, click **Log in**, sign up with your email.
@@ -168,8 +182,8 @@ Add more shadcn components with `cd web && npx shadcn@latest add <component>`.
 
 | Trigger | Jobs |
 |---|---|
-| pull request, push | **backend**: `npm ci`, typecheck, tests, `sam validate --lint`, `sam build` - **web**: lint, build |
-| push to `main` / manual run | the above, then **deploy**: `sam deploy` + `npm run deploy:web` |
+| pull request, push | **Backend**: `npm ci`, typecheck, tests, `sam validate --lint`, `sam build` - **Web**: lint, build |
+| push to `main` / manual run | the above, then **Deploy**: fetch GeoIP db (cached per month) + `sam deploy` + `npm run deploy:web` |
 
 AWS access uses **OIDC** - no access keys stored in GitHub. One-time setup:
 
@@ -187,19 +201,27 @@ workflow runs on `main` of this repo. Until the variable exists the deploy job i
 **[main.dwkknfpc3n8id.amplifyapp.com](https://main.dwkknfpc3n8id.amplifyapp.com/)**: the web app,
 deployed from `main` by the CI/CD workflow (hosted on AWS Amplify).
 
-- Without logging in you see the live clock for your timezone.
+- Without logging in you see the live clock for where you are (GPS if you allow it, otherwise
+  your IP address).
 - **Log in** → **Sign up** with your email to try the world clock and meeting reminders.
   Cognito emails you a 6-digit code to confirm the account.
 
 ## Cost (free tier)
 
 Lambda, DynamoDB (provisioned 5/5), Cognito, EventBridge Scheduler, SQS, SNS email, CloudFront and
-CloudWatch stay inside the always-free limits for a sample project. API Gateway and S3 are free for
-12 months (legacy accounts) or covered by credits, then cost cents at this scale. Set an AWS Budget
-alert (e.g. $1) anyway.
+CloudWatch stay inside the always-free limits for a sample project. API Gateway, Amplify Hosting and
+S3 are free for 12 months (legacy accounts) or covered by credits, then cost cents at this scale.
+Set an AWS Budget alert (e.g. $1) anyway.
+
+- The time function runs with 512 MB (for the GeoIP database): 4x the GB-seconds of 128 MB, still
+  far below the 400,000 GB-s free per month - the 1M free requests run out first.
+- Each new monthly GeoIP database uploads a ~60 MB layer zip to the SAM artifacts bucket in S3;
+  unchanged databases are not re-uploaded. Old zips stay there (a few cents/month) unless you add
+  an S3 lifecycle rule.
 
 ## Clean up
 
 ```bash
-npm run destroy          # empties the web bucket, then sam delete
+npm run destroy          # empties the web bucket (CloudFront hosting only), then sam delete
+aws cloudformation delete-stack --stack-name what-time-github-oidc --region ap-southeast-1   # CI role
 ```
