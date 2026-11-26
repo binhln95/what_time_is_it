@@ -10,6 +10,13 @@ Parameters:
     Type: String
     Default: binhln95/what_time_is_it
     Description: owner/repo allowed to assume the deploy role
+  GitHubRepoWithIds:
+    Type: String
+    Default: binhln95@24991271/what_time_is_it@1473262838
+    Description: >
+      Same repo in GitHub's immutable-ID subject format (owner@ownerId/repo@repoId), which is what
+      GitHub puts in the token "sub" claim. Pinning the IDs means a deleted-and-recreated repo or
+      a renamed account with the same name cannot assume the role.
   Branch:
     Type: String
     Default: main
@@ -49,8 +56,11 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                # Only pushes to this branch of this repo - not PRs, not forks, not other branches.
-                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:ref:refs/heads/${Branch}
+                # Only runs on this branch of this repo - not PRs, not forks, not other branches.
+                # Both subject formats are listed (values in a list are OR-ed).
+                token.actions.githubusercontent.com:sub:
+                  - !Sub repo:${GitHubRepoWithIds}:ref:refs/heads/${Branch}
+                  - !Sub repo:${GitHubRepo}:ref:refs/heads/${Branch}
       # SAM creates IAM roles, Lambda, API Gateway, Cognito, DynamoDB, SQS, SNS, Scheduler,
       # Amplify, CloudFront... Admin keeps this sample simple; the trust policy above is what
       # limits who can use it. Tighten to a custom policy for real projects.
