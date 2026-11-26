@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { getTimeInfo, isValidTimeZone, offsetMinutes, zonedLocalToUtc } from '../src/shared/time.js';
+import { getTimeInfo, isValidTimeZone, offsetMinutes, timeZoneAt, zonedLocalToUtc } from '../src/shared/time.js';
 import { handler } from '../src/functions/time.js';
 
 test('getTimeInfo converts to Asia/Ho_Chi_Minh (+07:00)', () => {
@@ -58,6 +58,43 @@ test('time handler returns 200 with tz', async () => {
 test('time handler defaults to UTC', async () => {
   const res = await handler({});
   assert.equal(JSON.parse(res.body!).timezone, 'UTC');
+});
+
+test('timeZoneAt maps coordinates to IANA timezones', () => {
+  assert.equal(timeZoneAt(10.78, 106.7), 'Asia/Ho_Chi_Minh'); // Ho Chi Minh City
+  assert.equal(timeZoneAt(1.29, 103.85), 'Asia/Singapore');
+  assert.equal(timeZoneAt(35.68, 139.69), 'Asia/Tokyo');
+  assert.equal(timeZoneAt(40.71, -74.0), 'America/New_York');
+});
+
+test('timeZoneAt rejects invalid coordinates', () => {
+  assert.equal(timeZoneAt(91, 0), null);
+  assert.equal(timeZoneAt(0, -181), null);
+  assert.equal(timeZoneAt(NaN, 10), null);
+});
+
+test('time handler uses the location: VN -> +07:00, Singapore -> +08:00', async () => {
+  const vn = JSON.parse((await handler({ queryStringParameters: { lat: '10.78', lon: '106.70' } })).body!);
+  assert.equal(vn.timezone, 'Asia/Ho_Chi_Minh');
+  assert.equal(vn.utcOffset, '+07:00');
+  assert.equal(vn.source, 'location');
+
+  const sg = JSON.parse((await handler({ queryStringParameters: { lat: '1.29', lon: '103.85' } })).body!);
+  assert.equal(sg.timezone, 'Asia/Singapore');
+  assert.equal(sg.utcOffset, '+08:00');
+});
+
+test('time handler prefers lat/lon over tz', async () => {
+  const res = await handler({ queryStringParameters: { lat: '1.29', lon: '103.85', tz: 'Asia/Tokyo' } });
+  assert.equal(JSON.parse(res.body!).timezone, 'Asia/Singapore');
+});
+
+test('time handler returns 400 for invalid or partial coordinates', async () => {
+  for (const q of [{ lat: '1.29' }, { lat: 'abc', lon: '103' }, { lat: '95', lon: '10' }, { lat: '', lon: '' }]) {
+    const res = await handler({ queryStringParameters: q });
+    assert.equal(res.statusCode, 400, JSON.stringify(q));
+    assert.equal(JSON.parse(res.body!).error, 'InvalidLocation');
+  }
 });
 
 test('time handler returns 400 for invalid tz', async () => {

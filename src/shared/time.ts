@@ -1,5 +1,20 @@
 // Pure time helpers (no AWS deps) - shared by all functions and unit-tested.
 
+import tzlookup from '@photostructure/tz-lookup';
+
+// Coordinates -> IANA timezone, using an offline timezone-boundary map bundled into the
+// Lambda (no external API). Returns null for out-of-range / non-numeric coordinates.
+// Over oceans it returns nautical zones such as "Etc/GMT-8".
+export function timeZoneAt(lat: number, lon: number): string | null {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  try {
+    const tz = tzlookup(lat, lon);
+    return isValidTimeZone(tz) ? tz : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface TimeInfo {
   timezone: string;
   datetime: string;

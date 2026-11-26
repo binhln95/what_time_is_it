@@ -73,7 +73,8 @@ works for dev and prod stacks.
 All routes except `/time` need `Authorization: Bearer <Cognito ID token>`.
 
 ```bash
-GET  /time?tz=Asia/Ho_Chi_Minh
+GET  /time?lat=1.29&lon=103.85   # time at a location -> Asia/Singapore, +08:00
+GET  /time?tz=Asia/Ho_Chi_Minh   # time in a timezone
 GET  /favorites
 PUT  /favorites      {"timezones": ["Asia/Tokyo", "Europe/London"]}
 POST /meetings       {"title": "Sprint review", "start": "2026-12-01T10:00", "timezone": "Asia/Ho_Chi_Minh",
@@ -82,6 +83,12 @@ POST /meetings       {"title": "Sprint review", "start": "2026-12-01T10:00", "ti
 GET  /meetings
 GET  /meetings/{id}  # includes start/end in every participant's timezone
 ```
+
+`/time` picks the timezone from `lat`/`lon` first (looked up offline in the Lambda with
+[`@photostructure/tz-lookup`](https://github.com/photostructure/tz-lookup), no external API),
+then `tz`, else UTC; the response field `source` says which (`location` | `tz` | `default`).
+The web app sends the position only if the user already granted location access or clicks
+**Use my location**, rounded to 2 decimals (~1 km).
 
 ## Prerequisites
 

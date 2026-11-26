@@ -28,5 +28,8 @@
     "esbuild": "^0.28.2",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@photostructure/tz-lookup": "^11.8.0"
   }
 }

@@ -9,6 +9,8 @@ export interface TimeInfo {
   utcOffset: string
   utcDatetime: string
   unixTime: number
+  // only on GET /time: how the server picked the timezone
+  source?: "location" | "tz" | "default"
 }
 
 export interface Participant {

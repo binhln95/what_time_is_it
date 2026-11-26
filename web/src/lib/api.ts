@@ -40,7 +40,11 @@ async function request<T>(
 }
 
 export const api = {
-  time: (tz: string) => request<TimeInfo>(`/time?tz=${encodeURIComponent(tz)}`),
+  // GET /time by coordinates (server looks up the timezone) or by IANA timezone name
+  time: (where: { lat: number; lon: number } | { tz: string }) =>
+    request<TimeInfo>(
+      `/time?${new URLSearchParams("tz" in where ? { tz: where.tz } : { lat: String(where.lat), lon: String(where.lon) })}`
+    ),
   favorites: () => request<{ favorites: TimeInfo[] }>("/favorites"),
   saveFavorites: (timezones: string[]) =>
     request<{ favorites: TimeInfo[] }>("/favorites", {
