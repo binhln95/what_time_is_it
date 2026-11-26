@@ -1,0 +1,8 @@
+{
+  "version": "2.0",
+  "routeKey": "GET /time",
+  "rawPath": "/time",
+  "rawQueryString": "tz=Asia/Ho_Chi_Minh",
+  "queryStringParameters": { "tz": "Asia/Ho_Chi_Minh" },
+  "requestContext": { "http": { "method": "GET", "path": "/time" } }
+}

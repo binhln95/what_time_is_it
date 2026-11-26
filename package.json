@@ -1,0 +1,32 @@
+{
+  "name": "what-time",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --import tsx --test tests/*.test.ts",
+    "typecheck": "tsc",
+    "validate": "sam validate --lint",
+    "build": "sam build",
+    "deploy": "sam build && sam deploy && npm run deploy:web",
+    "deploy:prod": "sam build && sam deploy --config-env prod && npm --prefix web run build && node scripts/web.mjs deploy what-time-prod",
+    "deploy:web": "npm --prefix web run build && node scripts/web.mjs deploy what-time",
+    "web:install": "npm --prefix web install",
+    "web:config": "node scripts/web.mjs config what-time",
+    "web": "npm --prefix web run dev",
+    "local": "sam build && sam local start-api",
+    "invoke": "sam build && sam local invoke TimeFunction -e events/event.json",
+    "destroy": "node scripts/web.mjs empty what-time && sam delete"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1178.0",
+    "@aws-sdk/client-scheduler": "^3.1178.0",
+    "@aws-sdk/client-sns": "^3.1178.0",
+    "@aws-sdk/lib-dynamodb": "^3.1178.0",
+    "@types/aws-lambda": "^8.10.164",
+    "@types/node": "^26.6.11",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

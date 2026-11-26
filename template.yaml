@@ -1,0 +1,446 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  what-time - World clock & meeting reminder.
+  Web on CloudFront + S3 or Amplify Hosting, API Gateway HTTP API + Cognito JWT, Lambda,
+  DynamoDB, EventBridge Scheduler -> SQS -> Lambda -> SNS (email).
+
+Parameters:
+  Stage:
+    Type: String
+    AllowedValues: [dev, prod]
+    Default: dev
+  WebHosting:
+    Type: String
+    AllowedValues: [cloudfront, amplify, none]
+    Default: cloudfront
+    Description: >
+      Where the web app is hosted. cloudfront = S3 + CloudFront (new AWS accounts must be
+      verified by AWS Support first); amplify = AWS Amplify Hosting (manual zip deploys);
+      none = run it locally only (http://localhost:8080).
+
+Conditions:
+  IsProd: !Equals [!Ref Stage, prod]
+  UseCloudFront: !Equals [!Ref WebHosting, cloudfront]
+  UseAmplify: !Equals [!Ref WebHosting, amplify]
+  HasWeb: !Not [!Equals [!Ref WebHosting, none]]
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Architectures: [arm64]
+    MemorySize: 128
+    Timeout: 5
+    Tags:
+      app: what-time
+      stage: !Ref Stage
+
+Resources:
+  # ---------------------------------------------------------------- Web (S3 + CloudFront)
+  WebBucket:
+    Type: AWS::S3::Bucket
+    Condition: UseCloudFront
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: UseCloudFront
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontOnly
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub ${WebBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${WebDistribution}
+
+  WebOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Condition: UseCloudFront
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub ${AWS::StackName}-web
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  WebDistribution:
+    Type: AWS::CloudFront::Distribution
+    Condition: UseCloudFront
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub ${AWS::StackName} web
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: PriceClass_200
+        Origins:
+          - Id: web-s3
+            DomainName: !GetAtt WebBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt WebOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: web-s3
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # Managed-CachingOptimized
+
+  # ---------------------------------------------------------------- Web (Amplify Hosting)
+  # Static hosting with HTTPS on https://main.<appId>.amplifyapp.com. Files are uploaded as a
+  # zip by scripts/web.mjs (manual deployment, no Git connection / build pipeline).
+  AmplifyApp:
+    Type: AWS::Amplify::App
+    Condition: UseAmplify
+    Properties:
+      Name: !Sub ${AWS::StackName}-web
+      Platform: WEB
+
+  AmplifyBranch:
+    Type: AWS::Amplify::Branch
+    Condition: UseAmplify
+    Properties:
+      AppId: !GetAtt AmplifyApp.AppId
+      BranchName: main
+      EnableAutoBuild: false
+
+  # ---------------------------------------------------------------- Auth (Cognito)
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub ${AWS::StackName}-users
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref UserPool
+      Domain: !Sub ${AWS::StackName}-${AWS::AccountId} # Hosted UI prefix, must be unique per region
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: web
+      GenerateSecret: false # browser apps cannot keep a secret -> use PKCE
+      SupportedIdentityProviders: [COGNITO]
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid, email]
+      CallbackURLs: &webUrls
+        - http://localhost:8080/
+        - !If [UseCloudFront, !Sub 'https://${WebDistribution.DomainName}/', !Ref AWS::NoValue]
+        - !If [UseAmplify, !Sub 'https://main.${AmplifyApp.DefaultDomain}/', !Ref AWS::NoValue]
+      LogoutURLs: *webUrls
+      ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+      PreventUserExistenceErrors: ENABLED
+
+  # ---------------------------------------------------------------- API (HTTP API)
+  Api:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      DefaultRouteSettings: # protects the free tier from spam
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
+      CorsConfiguration:
+        # Must stay a plain list: SAM silently drops CorsConfiguration when AllowOrigins is an !If.
+        AllowOrigins:
+          - http://localhost:8080
+          - !If [UseCloudFront, !Sub 'https://${WebDistribution.DomainName}', !Ref AWS::NoValue]
+          - !If [UseAmplify, !Sub 'https://main.${AmplifyApp.DefaultDomain}', !Ref AWS::NoValue]
+        AllowMethods: [GET, POST, PUT]
+        AllowHeaders: [Authorization, Content-Type]
+        MaxAge: 600
+      Auth:
+        DefaultAuthorizer: CognitoJwt # every route needs a token unless it says Authorizer: NONE
+        Authorizers:
+          CognitoJwt:
+            IdentitySource: $request.header.Authorization
+            JwtConfiguration:
+              issuer: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}
+              audience:
+                - !Ref UserPoolClient
+
+  # ---------------------------------------------------------------- Data (DynamoDB)
+  Table:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PROVISIONED # the always-free tier covers provisioned capacity only
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      AttributeDefinitions:
+        - { AttributeName: PK, AttributeType: S }
+        - { AttributeName: SK, AttributeType: S }
+      KeySchema:
+        - { AttributeName: PK, KeyType: HASH }
+        - { AttributeName: SK, KeyType: RANGE }
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # ---------------------------------------------------------------- Reminders
+  ReminderScheduleGroup:
+    Type: AWS::Scheduler::ScheduleGroup
+    Properties:
+      Name: !Sub ${AWS::StackName}-reminders
+
+  SchedulerRole: # assumed by EventBridge Scheduler to put messages into the queue
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: send-reminders
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt ReminderQueue.Arn
+
+  ReminderQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 30 # >= 6x the notify function timeout
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ReminderDLQ.Arn
+        maxReceiveCount: 3
+
+  ReminderDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600 # 14 days
+
+  ReminderTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: What Time
+
+  # ---------------------------------------------------------------- Functions
+  TimeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-time
+      CodeUri: ./
+      Handler: time.handler
+      LoggingConfig:
+        LogFormat: JSON
+        LogGroup: !Ref TimeLogGroup
+      Events:
+        GetTime:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /time
+            Method: GET
+            Auth:
+              Authorizer: NONE # public route
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints: [src/functions/time.ts]
+        Format: esm
+        OutExtension: [.js=.mjs]
+        Target: es2022
+        Sourcemap: true
+
+  FavoritesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-favorites
+      CodeUri: ./
+      Handler: favorites.handler
+      LoggingConfig:
+        LogFormat: JSON
+        LogGroup: !Ref FavoritesLogGroup
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref Table
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref Table
+      Events:
+        GetFavorites:
+          Type: HttpApi
+          Properties: { ApiId: !Ref Api, Path: /favorites, Method: GET }
+        PutFavorites:
+          Type: HttpApi
+          Properties: { ApiId: !Ref Api, Path: /favorites, Method: PUT }
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints: [src/functions/favorites.ts]
+        Format: esm
+        OutExtension: [.js=.mjs]
+        Target: es2022
+        Sourcemap: true
+        External: ['@aws-sdk/*'] # provided by the Lambda runtime
+
+  MeetingsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-meetings
+      CodeUri: ./
+      Handler: meetings.handler
+      Timeout: 10
+      LoggingConfig:
+        LogFormat: JSON
+        LogGroup: !Ref MeetingsLogGroup
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref Table
+          SCHEDULE_GROUP: !Ref ReminderScheduleGroup
+          REMINDER_QUEUE_ARN: !GetAtt ReminderQueue.Arn
+          SCHEDULER_ROLE_ARN: !GetAtt SchedulerRole.Arn
+          REMINDER_TOPIC_ARN: !Ref ReminderTopic
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref Table
+        - Statement:
+            - Effect: Allow
+              Action: scheduler:CreateSchedule
+              Resource: !Sub arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/${ReminderScheduleGroup}/*
+            - Effect: Allow
+              Action: iam:PassRole
+              Resource: !GetAtt SchedulerRole.Arn
+            - Effect: Allow
+              Action: sns:Subscribe
+              Resource: !Ref ReminderTopic
+      Events:
+        CreateMeeting:
+          Type: HttpApi
+          Properties: { ApiId: !Ref Api, Path: /meetings, Method: POST }
+        ListMeetings:
+          Type: HttpApi
+          Properties: { ApiId: !Ref Api, Path: /meetings, Method: GET }
+        GetMeeting:
+          Type: HttpApi
+          Properties: { ApiId: !Ref Api, Path: '/meetings/{id}', Method: GET }
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints: [src/functions/meetings.ts]
+        Format: esm
+        OutExtension: [.js=.mjs]
+        Target: es2022
+        Sourcemap: true
+        External: ['@aws-sdk/*']
+
+  NotifyFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-notify
+      CodeUri: ./
+      Handler: notify.handler
+      LoggingConfig:
+        LogFormat: JSON
+        LogGroup: !Ref NotifyLogGroup
+      Environment:
+        Variables:
+          REMINDER_TOPIC_ARN: !Ref ReminderTopic
+      Policies:
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt ReminderTopic.TopicName
+      Events:
+        Reminders:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt ReminderQueue.Arn
+            BatchSize: 10
+            FunctionResponseTypes: [ReportBatchItemFailures]
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints: [src/functions/notify.ts]
+        Format: esm
+        OutExtension: [.js=.mjs]
+        Target: es2022
+        Sourcemap: true
+        External: ['@aws-sdk/*']
+
+  # ---------------------------------------------------------------- Logs
+  TimeLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-time
+      RetentionInDays: !If [IsProd, 30, 7]
+
+  FavoritesLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-favorites
+      RetentionInDays: !If [IsProd, 30, 7]
+
+  MeetingsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-meetings
+      RetentionInDays: !If [IsProd, 30, 7]
+
+  NotifyLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-notify
+      RetentionInDays: !If [IsProd, 30, 7]
+
+Outputs:
+  WebUrl:
+    Condition: HasWeb
+    Description: Web app URL
+    Value: !If
+      - UseCloudFront
+      - !Sub https://${WebDistribution.DomainName}
+      - !Sub https://main.${AmplifyApp.DefaultDomain}
+  AmplifyAppId:
+    Condition: UseAmplify
+    Value: !GetAtt AmplifyApp.AppId
+  AmplifyBranch:
+    Condition: UseAmplify
+    Value: !GetAtt AmplifyBranch.BranchName
+  WebBucketName:
+    Condition: UseCloudFront
+    Description: S3 bucket holding the web files (uploaded by scripts/web.mjs)
+    Value: !Ref WebBucket
+  WebDistributionId:
+    Condition: UseCloudFront
+    Value: !Ref WebDistribution
+  ApiUrl:
+    Description: API base URL (routes /time, /favorites, /meetings)
+    Value: !Sub https://${Api}.execute-api.${AWS::Region}.amazonaws.com
+  UserPoolId:
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+  CognitoDomain:
+    Description: Cognito Hosted UI base URL
+    Value: !Sub https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com
+  ReminderDLQUrl:
+    Description: Failed reminders end up here
+    Value: !Ref ReminderDLQ
