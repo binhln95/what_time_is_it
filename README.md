@@ -154,6 +154,15 @@ Then add the `DeployRoleArn` output as repository **variable** `AWS_ROLE_ARN`
 (Settings -> Secrets and variables -> Actions -> Variables). The role can only be assumed by
 workflow runs on `main` of this repo. Until the variable exists the deploy job is skipped.
 
+## Live demo
+
+**[main.dwkknfpc3n8id.amplifyapp.com](https://main.dwkknfpc3n8id.amplifyapp.com/)**: the web app,
+deployed from `main` by the CI/CD workflow (hosted on AWS Amplify).
+
+- Without logging in you see the live clock for your timezone.
+- **Log in** → **Sign up** with your email to try the world clock and meeting reminders.
+  Cognito emails you a 6-digit code to confirm the account.
+
 ## Cost (free tier)
 
 Lambda, DynamoDB (provisioned 5/5), Cognito, EventBridge Scheduler, SQS, SNS email, CloudFront and
