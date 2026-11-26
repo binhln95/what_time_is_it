@@ -144,6 +144,15 @@ Use the npm scripts rather than plain `sam build`: they put the local esbuild on
 
 ## Deploy
 
+### 1. Connect to AWS (one-time setup)
+
+Link the AWS CLI on your machine to your AWS account, so `sam deploy` knows where to deploy:
+
+```bash
+aws configure            # access key of an IAM user, region: ap-southeast-1
+aws sts get-caller-identity   # prints your account id -> connected
+```
+
 ```bash
 npm run deploy           # fetch GeoIP db + sam build + sam deploy (dev) + vite build + publish web
 npm run deploy:prod      # same for the prod stack
