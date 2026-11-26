@@ -3,3 +3,5 @@ node_modules/
 .DS_Store
 web/public/config.js
 web/dist/
+# GeoIP database (~130 MB), downloaded by scripts/fetch-geoip.mjs
+layers/geoip/

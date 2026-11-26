@@ -84,11 +84,32 @@ GET  /meetings
 GET  /meetings/{id}  # includes start/end in every participant's timezone
 ```
 
-`/time` picks the timezone from `lat`/`lon` first (looked up offline in the Lambda with
-[`@photostructure/tz-lookup`](https://github.com/photostructure/tz-lookup), no external API),
-then `tz`, else UTC; the response field `source` says which (`location` | `tz` | `default`).
+`/time` picks the timezone from the first match, and says which in the response field `source`:
+
+| Order | Input | `source` |
+|---|---|---|
+| 1 | `?lat=&lon=` | `location` |
+| 2 | `?tz=` | `tz` |
+| 3 | **the caller's IP** - API Gateway passes it as `requestContext.http.sourceIp`, the Lambda looks it up in the DB-IP database (layer) | `ip` (response also has `ip` and `location: {city, region, country}`) |
+| 4 | nothing usable (e.g. private IP) | `default` (UTC) |
+
+Coordinates are turned into a timezone offline with
+[`@photostructure/tz-lookup`](https://github.com/photostructure/tz-lookup), no external API.
 The web app sends the position only if the user already granted location access or clicks
 **Use my location**, rounded to 2 decimals (~1 km).
+
+## GeoIP (IP -> location)
+
+`GET /time` without parameters locates the caller by IP using the free
+**[DB-IP IP to City Lite](https://db-ip.com/db/download/ip-to-city-lite)** database
+(IP Geolocation by [DB-IP](https://db-ip.com), licensed CC BY 4.0).
+
+- `npm run geoip` downloads this month's file (~130 MB) into `layers/geoip/` (gitignored);
+  `npm run deploy` and the CI deploy job run it automatically (CI caches it per month).
+- It ships as the Lambda layer `GeoIpLayer`, mounted at `/opt/dbip-city-lite.mmdb`, and is
+  loaded into memory on the first IP lookup (~0.2 s once per container), hence `MemorySize: 512`
+  for the time function. Lookups then take ~0.1 ms.
+- Accuracy is city/country level; VPNs, proxies and some mobile networks report another place.
 
 ## Prerequisites
 

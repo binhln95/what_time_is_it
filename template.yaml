@@ -243,6 +243,19 @@ Resources:
     Properties:
       DisplayName: What Time
 
+  # ---------------------------------------------------------------- GeoIP layer
+  # DB-IP "IP to City Lite" (CC BY 4.0, https://db-ip.com), downloaded into layers/geoip/ by
+  # scripts/fetch-geoip.mjs (not committed). Mounted at /opt/dbip-city-lite.mmdb.
+  GeoIpLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub ${AWS::StackName}-geoip
+      Description: DB-IP IP to City Lite database (CC BY 4.0, db-ip.com)
+      ContentUri: layers/geoip/
+      CompatibleArchitectures: [arm64]
+      CompatibleRuntimes: [nodejs22.x]
+      RetentionPolicy: Delete
+
   # ---------------------------------------------------------------- Functions
   TimeFunction:
     Type: AWS::Serverless::Function
@@ -250,6 +263,12 @@ Resources:
       FunctionName: !Sub ${AWS::StackName}-time
       CodeUri: ./
       Handler: time.handler
+      MemorySize: 512 # the ~130 MB GeoIP database is loaded into memory
+      Layers:
+        - !Ref GeoIpLayer
+      Environment:
+        Variables:
+          GEOIP_DB_PATH: /opt/dbip-city-lite.mmdb
       LoggingConfig:
         LogFormat: JSON
         LogGroup: !Ref TimeLogGroup

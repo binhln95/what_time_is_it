@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import {
   CloudSlashIcon,
   DesktopIcon,
+  GlobeSimpleIcon,
   MapPinIcon,
   SpinnerIcon,
 } from "@phosphor-icons/react"
@@ -29,9 +30,10 @@ import type { TimeInfo } from "@/lib/types"
 
 // Big clock. On page load it asks for the location (the browser shows its permission
 // prompt the first time), then GET /time:
-//   - location allowed: sends lat/lon, the server looks up the timezone of that place
-//     (VN -> UTC+7, Singapore -> UTC+8)
-//   - refused / unavailable: sends the device timezone setting instead
+//   1. location allowed       -> ?lat=&lon=, the server looks up the timezone of that place
+//                                (VN -> UTC+7, Singapore -> UTC+8)
+//   2. refused / unavailable  -> no parameters, the server locates the caller by IP address
+//   3. IP not locatable       -> ?tz=<device timezone setting>
 // While waiting for the answer the clock already ticks in the device timezone.
 // The server time is fetched once; the clock then ticks locally using the measured offset.
 export function LiveClock() {
@@ -49,6 +51,7 @@ export function LiveClock() {
     setOffsetMs(Date.parse(t.utcDatetime) + latency - Date.now())
     setInfo(t)
     setApiDown(false)
+    return t
   }
 
   async function locateMe() {
@@ -81,19 +84,24 @@ export function LiveClock() {
           if (cancelled) return
           if (isPermissionDenied(err)) setPermission("denied")
           else
-            toast.warning(
-              `${errorMessage(err)}, using your device timezone instead`
-            )
+            toast.warning(`${errorMessage(err)}, using your IP address instead`)
         } finally {
           if (!cancelled) setLocating(false)
         }
       }
       if (cancelled) return
 
-      // 2. Time for that position, or for the device timezone as a fallback.
+      // 2. Time for that position. Without one, let the server locate us by IP; if it
+      //    can't (it answers with its UTC default, e.g. private IP), use the device timezone.
       try {
-        await sync(position ?? { tz: browserTimeZone })
-        if (position) setPermission("granted")
+        if (position) {
+          await sync(position)
+          setPermission("granted")
+        } else {
+          const byIp = await sync("ip")
+          if (byIp.source !== "ip" && !cancelled)
+            await sync({ tz: browserTimeZone })
+        }
       } catch {
         if (!cancelled) setApiDown(true)
       }
@@ -105,20 +113,33 @@ export function LiveClock() {
 
   const tz = info?.timezone ?? browserTimeZone
   const fromLocation = info?.source === "location"
+  const fromIp = info?.source === "ip"
+  const ipPlace = [info?.location?.city, info?.location?.country]
+    .filter(Boolean)
+    .join(", ")
   const t = now + offsetMs
+  // Only worth mentioning when the clock really differs, not just the zone name
+  // (e.g. Asia/Bangkok vs Asia/Saigon are both UTC+7).
+  const deviceDiffers =
+    (fromLocation || fromIp) &&
+    offsetMinutes(t, tz) !== offsetMinutes(t, browserTimeZone)
+
+  const heading = fromLocation
+    ? "Local time at your location"
+    : fromIp
+      ? `Local time near ${ipPlace || "you"}`
+      : "Your local time"
 
   return (
     <Card>
       <CardContent className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
-          <p className="text-sm text-muted-foreground">
-            {fromLocation ? "Local time at your location" : "Your local time"}
-          </p>
+          <p className="text-sm text-muted-foreground">{heading}</p>
           <p className="font-heading text-6xl font-semibold tracking-tight tabular-nums sm:text-7xl">
             {formatTime(t, tz, true)}
           </p>
           <p className="mt-1 text-muted-foreground">{formatLongDate(t, tz)}</p>
-          {fromLocation && tz !== browserTimeZone && (
+          {deviceDiffers && (
             <p className="mt-1 text-xs text-muted-foreground">
               Your device is set to {browserTimeZone} (
               {formatOffset(offsetMinutes(t, browserTimeZone))}).
@@ -147,13 +168,22 @@ export function LiveClock() {
               </Badge>
             ) : (
               info && (
-                <Badge variant="outline">
+                <Badge
+                  variant="outline"
+                  title={fromIp && info.ip ? `IP ${info.ip}` : undefined}
+                >
                   {fromLocation ? (
                     <MapPinIcon data-icon="inline-start" />
+                  ) : fromIp ? (
+                    <GlobeSimpleIcon data-icon="inline-start" />
                   ) : (
                     <DesktopIcon data-icon="inline-start" />
                   )}
-                  {fromLocation ? "From your location" : "From device settings"}
+                  {fromLocation
+                    ? "From your location"
+                    : fromIp
+                      ? "From your IP address"
+                      : "From device settings"}
                 </Badge>
               )
             )}

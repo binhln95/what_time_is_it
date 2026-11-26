@@ -40,10 +40,15 @@ async function request<T>(
 }
 
 export const api = {
-  // GET /time by coordinates (server looks up the timezone) or by IANA timezone name
-  time: (where: { lat: number; lon: number } | { tz: string }) =>
+  // GET /time
+  //   { lat, lon } -> timezone of that point
+  //   { tz }       -> that timezone
+  //   "ip"         -> no parameters: the server locates the caller by IP address
+  time: (where: { lat: number; lon: number } | { tz: string } | "ip") =>
     request<TimeInfo>(
-      `/time?${new URLSearchParams("tz" in where ? { tz: where.tz } : { lat: String(where.lat), lon: String(where.lon) })}`
+      where === "ip"
+        ? "/time"
+        : `/time?${new URLSearchParams("tz" in where ? { tz: where.tz } : { lat: String(where.lat), lon: String(where.lon) })}`
     ),
   favorites: () => request<{ favorites: TimeInfo[] }>("/favorites"),
   saveFavorites: (timezones: string[]) =>

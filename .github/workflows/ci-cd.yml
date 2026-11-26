@@ -85,6 +85,17 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           mask-aws-account-id: true
 
+      # GeoIP database for the Lambda layer (~130 MB, not in git). DB-IP publishes monthly,
+      # so cache it per month instead of downloading on every run.
+      - id: month
+        run: echo "value=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v5
+        with:
+          path: layers/geoip
+          key: geoip-dbip-city-lite-${{ steps.month.outputs.value }}
+      - name: Fetch GeoIP database
+        run: npm run geoip
+
       - name: Deploy backend (sam)
         run: |
           npm run build

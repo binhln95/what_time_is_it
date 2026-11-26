@@ -10,7 +10,10 @@ export interface TimeInfo {
   utcDatetime: string
   unixTime: number
   // only on GET /time: how the server picked the timezone
-  source?: "location" | "tz" | "default"
+  source?: "location" | "tz" | "ip" | "default"
+  // only when source = "ip"
+  ip?: string
+  location?: { city?: string; region?: string; country?: string }
 }
 
 export interface Participant {

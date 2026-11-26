@@ -8,8 +8,9 @@
     "typecheck": "tsc",
     "validate": "sam validate --lint",
     "build": "sam build",
-    "deploy": "sam build && sam deploy && npm run deploy:web",
-    "deploy:prod": "sam build && sam deploy --config-env prod && npm --prefix web run build && node scripts/web.mjs deploy what-time-prod",
+    "geoip": "node scripts/fetch-geoip.mjs",
+    "deploy": "npm run geoip && sam build && sam deploy && npm run deploy:web",
+    "deploy:prod": "npm run geoip && sam build && sam deploy --config-env prod && npm --prefix web run build && node scripts/web.mjs deploy what-time-prod",
     "deploy:web": "npm --prefix web run build && node scripts/web.mjs deploy what-time",
     "web:install": "npm --prefix web install",
     "web:config": "node scripts/web.mjs config what-time",
@@ -30,6 +31,7 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "@photostructure/tz-lookup": "^11.8.0"
+    "@photostructure/tz-lookup": "^11.8.0",
+    "mmdb-lib": "^3.0.5"
   }
 }
