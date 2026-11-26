@@ -11,7 +11,13 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { useNow } from "@/hooks/use-now"
 import { api, errorMessage } from "@/lib/api"
-import { geoPermission, getPosition, type GeoPermission } from "@/lib/geo"
+import {
+  geoPermission,
+  getPosition,
+  isPermissionDenied,
+  type Coords,
+  type GeoPermission,
+} from "@/lib/geo"
 import {
   browserTimeZone,
   formatLongDate,
@@ -21,10 +27,12 @@ import {
 } from "@/lib/time"
 import type { TimeInfo } from "@/lib/types"
 
-// Big clock. GET /time returns the current time and the timezone to show:
-//   - with location permission: the browser sends lat/lon and the server looks up the
-//     timezone of that place (VN -> UTC+7, Singapore -> UTC+8)
-//   - otherwise: the device timezone setting is sent instead
+// Big clock. On page load it asks for the location (the browser shows its permission
+// prompt the first time), then GET /time:
+//   - location allowed: sends lat/lon, the server looks up the timezone of that place
+//     (VN -> UTC+7, Singapore -> UTC+8)
+//   - refused / unavailable: sends the device timezone setting instead
+// While waiting for the answer the clock already ticks in the device timezone.
 // The server time is fetched once; the clock then ticks locally using the measured offset.
 export function LiveClock() {
   const now = useNow(250)
@@ -57,21 +65,37 @@ export function LiveClock() {
   }
 
   useEffect(() => {
-    // Use the location automatically only if the user already allowed it -
-    // never pop the permission prompt on page load.
     let cancelled = false
     ;(async () => {
       const perm = await geoPermission()
       if (cancelled) return
       setPermission(perm)
-      try {
-        if (perm === "granted") await sync(await getPosition())
-        else await sync({ tz: browserTimeZone })
-      } catch {
-        if (!cancelled) {
-          // location failed -> fall back to the device timezone
-          await sync({ tz: browserTimeZone }).catch(() => setApiDown(true))
+
+      // 1. Ask for the position on load (prompts if the user has not decided yet).
+      let position: Coords | null = null
+      if (perm === "prompt" || perm === "granted") {
+        setLocating(true)
+        try {
+          position = await getPosition()
+        } catch (err) {
+          if (cancelled) return
+          if (isPermissionDenied(err)) setPermission("denied")
+          else
+            toast.warning(
+              `${errorMessage(err)}, using your device timezone instead`
+            )
+        } finally {
+          if (!cancelled) setLocating(false)
         }
+      }
+      if (cancelled) return
+
+      // 2. Time for that position, or for the device timezone as a fallback.
+      try {
+        await sync(position ?? { tz: browserTimeZone })
+        if (position) setPermission("granted")
+      } catch {
+        if (!cancelled) setApiDown(true)
       }
     })()
     return () => {
@@ -112,6 +136,14 @@ export function LiveClock() {
               <Badge variant="destructive">
                 <CloudSlashIcon data-icon="inline-start" />
                 API unreachable
+              </Badge>
+            ) : !info && locating ? (
+              <Badge variant="outline">
+                <SpinnerIcon
+                  data-icon="inline-start"
+                  className="animate-spin"
+                />
+                Waiting for location permission
               </Badge>
             ) : (
               info && (
