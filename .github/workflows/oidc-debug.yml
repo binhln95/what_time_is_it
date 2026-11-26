@@ -1,0 +1,52 @@
+name: OIDC debug
+
+# Temporary: shows what is inside the GitHub OIDC token and proves it can assume the AWS role.
+# Runs when this file is pushed to main, or manually. Delete the file when done.
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/oidc-debug.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # lets the job request an OIDC token
+
+jobs:
+  claims:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show OIDC token claims
+        run: |
+          # Ask GitHub for a token meant for AWS STS (same as configure-aws-credentials does)
+          TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
+          echo "::add-mask::$TOKEN" # never print the token itself
+
+          # A JWT is header.payload.signature - decode only the payload (base64url)
+          PAYLOAD=$(echo "$TOKEN" | cut -d. -f2)
+          CLAIMS=$(python3 -c 'import sys,json,base64; p=sys.argv[1]; p+="="*(-len(p)%4); print(json.dumps(json.loads(base64.urlsafe_b64decode(p))))' "$PAYLOAD")
+
+          echo "$CLAIMS" | jq '{iss, aud, sub, repository, ref, event_name, actor, iat, exp}'
+          echo "Token lifetime: $(echo "$CLAIMS" | jq '.exp - .iat') seconds"
+
+          # Also as annotations, visible on the run page without opening the log
+          echo "::notice title=sub::$(echo "$CLAIMS" | jq -r .sub)"
+          echo "::notice title=iss / aud::$(echo "$CLAIMS" | jq -r '.iss + "  |  " + .aud')"
+          echo "::notice title=repository / ref / event::$(echo "$CLAIMS" | jq -r '.repository + "  |  " + .ref + "  |  " + .event_name')"
+          echo "::notice title=token lifetime::$(echo "$CLAIMS" | jq '.exp - .iat') seconds"
+
+      - name: Exchange token for AWS credentials (STS AssumeRoleWithWebIdentity)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ap-southeast-1
+          mask-aws-account-id: true
+
+      - name: Who am I in AWS?
+        run: |
+          ARN=$(aws sts get-caller-identity --query Arn --output text | sed -E 's/[0-9]{12}/<account-id>/')
+          EXP=$(aws configure export-credentials --format process | jq -r .Expiration)
+          echo "AWS identity: $ARN"
+          echo "::notice title=AWS identity (assumed via OIDC)::$ARN  |  credentials expire $EXP"
