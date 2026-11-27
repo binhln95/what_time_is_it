@@ -24,7 +24,7 @@ async function request<T>(
     throw new ApiError(0, "Missing config.js - run `npm run web:config`")
 
   const headers: Record<string, string> = { "Content-Type": "application/json" }
-  const session = getSession()
+  const session = await getSession() // refreshes the token if it expired
   if (session) headers.Authorization = `Bearer ${session.token}`
 
   const res = await fetch(`${config.apiUrl}${path}`, {

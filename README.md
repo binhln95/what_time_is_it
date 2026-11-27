@@ -5,7 +5,7 @@ World clock & meeting reminder, built on AWS serverless (mostly always-free serv
 ```
 Browser ──▶ Amplify Hosting (or CloudFront + S3, see WebHosting) ──▶ web (React)
    │
-   │  1. Login ──▶ Cognito Hosted UI (OAuth2 code + PKCE) ──▶ ID token (JWT)
+   │  1. Log in / sign up (own forms, aws-amplify/auth, SRP) ──▶ Cognito ──▶ ID token (JWT)
    │
    └──HTTPS (Authorization: Bearer <id token>)──▶ API Gateway HTTP API
                                ├─ throttling (rate 10/s, burst 20)
@@ -46,7 +46,7 @@ what_time/
 └── web/                       # frontend: React 19 + Vite + Tailwind 4 + shadcn/ui (radix, Phosphor icons)
     ├── public/config.js       #   runtime config (API URL, Cognito ids) - generated, gitignored
     └── src/
-        ├── lib/               #   auth.ts (Cognito PKCE), api.ts, geo.ts, time.ts, types.ts, config.ts
+        ├── lib/               #   auth.ts (Cognito via aws-amplify), api.ts, geo.ts, time.ts, types.ts, config.ts
         ├── hooks/             #   use-now, use-session
         └── components/        #   live-clock, world-clock, meetings, meeting-form, ... + ui/ (shadcn)
 ```

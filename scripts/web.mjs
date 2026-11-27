@@ -36,7 +36,7 @@ function stackOutputs() {
 function writeConfig(out, dir) {
   const config = {
     apiUrl: out.ApiUrl,
-    cognitoDomain: out.CognitoDomain,
+    userPoolId: out.UserPoolId,
     userPoolClientId: out.UserPoolClientId,
   };
   writeFileSync(`${dir}config.js`, `window.APP_CONFIG = ${JSON.stringify(config, null, 2)};\n`);

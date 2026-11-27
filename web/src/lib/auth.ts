@@ -1,10 +1,19 @@
-// Cognito Hosted UI login: OAuth2 authorization code flow + PKCE (no client secret).
-// The ID token is kept in sessionStorage and sent to the API as a Bearer token.
+// Login / sign-up against the Cognito user pool, from our own forms (no Hosted UI redirect).
+// aws-amplify/auth talks to Cognito directly: SRP for passwords (the password itself is never
+// sent), and it stores + refreshes the tokens. The ID token is sent to the API as Bearer token.
 
+import { Amplify } from "aws-amplify"
+import {
+  autoSignIn,
+  confirmSignUp,
+  fetchAuthSession,
+  resendSignUpCode,
+  signIn,
+  signOut,
+  signUp,
+} from "aws-amplify/auth"
 import { config } from "@/lib/config"
 
-const TOKEN_KEY = "idToken"
-const PKCE_KEY = "pkce"
 export const AUTH_CHANGED = "auth-changed"
 
 export interface Session {
@@ -12,100 +21,121 @@ export interface Session {
   email: string
 }
 
-const redirectUri = () => `${window.location.origin}/`
-
-const b64url = (bytes: ArrayBuffer | Uint8Array) =>
-  btoa(String.fromCharCode(...new Uint8Array(bytes)))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "")
-
-const randomString = (n: number) =>
-  b64url(crypto.getRandomValues(new Uint8Array(n)))
-
-function requireConfig() {
+let configured = false
+function ensureConfigured() {
   if (!config) throw new Error("Missing config.js - run `npm run web:config`")
-  return config
+  if (!configured) {
+    Amplify.configure({
+      Auth: {
+        Cognito: {
+          userPoolId: config.userPoolId,
+          userPoolClientId: config.userPoolClientId,
+          loginWith: { email: true },
+          signUpVerificationMethod: "code",
+        },
+      },
+    })
+    configured = true
+  }
 }
 
-export async function login() {
-  const cfg = requireConfig()
-  const verifier = randomString(32)
-  const state = randomString(16)
-  sessionStorage.setItem(PKCE_KEY, JSON.stringify({ verifier, state }))
-  const challenge = b64url(
-    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))
-  )
-  const query = new URLSearchParams({
-    response_type: "code",
-    client_id: cfg.userPoolClientId,
-    redirect_uri: redirectUri(),
-    scope: "openid email",
-    code_challenge_method: "S256",
-    code_challenge: challenge,
-    state,
-  })
-  window.location.assign(`${cfg.cognitoDomain}/oauth2/authorize?${query}`)
-}
+const notifyChanged = () => window.dispatchEvent(new Event(AUTH_CHANGED))
 
-// After login Cognito redirects back with ?code=...&state=...; exchange the code for tokens.
-export async function handleRedirect() {
-  const params = new URLSearchParams(window.location.search)
-  const code = params.get("code")
-  if (!code) return
-  window.history.replaceState(null, "", redirectUri())
-
-  const saved = JSON.parse(sessionStorage.getItem(PKCE_KEY) ?? "null") as {
-    verifier: string
-    state: string
-  } | null
-  sessionStorage.removeItem(PKCE_KEY)
-  if (!saved || saved.state !== params.get("state"))
-    throw new Error("Login state mismatch, please try again")
-
-  const cfg = requireConfig()
-  const res = await fetch(`${cfg.cognitoDomain}/oauth2/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      client_id: cfg.userPoolClientId,
-      code,
-      redirect_uri: redirectUri(),
-      code_verifier: saved.verifier,
-    }),
-  })
-  if (!res.ok) throw new Error(`Login failed (${res.status})`)
-  const tokens = (await res.json()) as { id_token: string }
-  sessionStorage.setItem(TOKEN_KEY, tokens.id_token) // the ID token carries the email claim
-}
-
-export function getSession(): Session | null {
-  const token = sessionStorage.getItem(TOKEN_KEY)
-  if (!token) return null
+// Current session, or null when logged out. Expired ID tokens are refreshed automatically.
+export async function getSession(): Promise<Session | null> {
+  if (!config) return null
+  ensureConfigured()
   try {
-    const claims = JSON.parse(
-      atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))
-    )
-    if (claims.exp * 1000 < Date.now()) throw new Error("expired")
-    return { token, email: String(claims.email ?? "") }
+    const { tokens } = await fetchAuthSession()
+    const idToken = tokens?.idToken
+    if (!idToken) return null
+    return {
+      token: idToken.toString(),
+      email: String(idToken.payload.email ?? ""),
+    }
   } catch {
-    sessionStorage.removeItem(TOKEN_KEY)
     return null
   }
 }
 
-export function clearSession() {
-  sessionStorage.removeItem(TOKEN_KEY)
-  window.dispatchEvent(new Event(AUTH_CHANGED))
+// "confirm-sign-up": the account exists but its email is not verified yet (a new code was sent).
+export type LogInResult = "done" | "confirm-sign-up"
+
+export async function logIn(
+  email: string,
+  password: string
+): Promise<LogInResult> {
+  ensureConfigured()
+  try {
+    const { nextStep } = await signIn({ username: email, password })
+    if (nextStep.signInStep === "DONE") {
+      notifyChanged()
+      return "done"
+    }
+    if (nextStep.signInStep === "CONFIRM_SIGN_UP") {
+      await resendSignUpCode({ username: email })
+      return "confirm-sign-up"
+    }
+    throw new Error(`Unsupported sign-in step: ${nextStep.signInStep}`)
+  } catch (err) {
+    if ((err as Error).name === "UserAlreadyAuthenticatedException") {
+      notifyChanged()
+      return "done"
+    }
+    throw err
+  }
 }
 
-export function logout() {
-  const cfg = requireConfig()
-  sessionStorage.removeItem(TOKEN_KEY)
-  const query = new URLSearchParams({
-    client_id: cfg.userPoolClientId,
-    logout_uri: redirectUri(),
+// Creates the account; Cognito emails a 6-digit code to confirm it.
+export async function register(email: string, password: string) {
+  ensureConfigured()
+  await signUp({
+    username: email,
+    password,
+    options: { userAttributes: { email }, autoSignIn: true },
   })
-  window.location.assign(`${cfg.cognitoDomain}/logout?${query}`)
+}
+
+// Confirms the email with the code and logs in. Returns false when the account is confirmed
+// but could not be logged in automatically (the user then logs in with the form).
+export async function confirmRegistration(
+  email: string,
+  code: string,
+  password?: string
+): Promise<boolean> {
+  ensureConfigured()
+  const { nextStep } = await confirmSignUp({
+    username: email,
+    confirmationCode: code,
+  })
+  if (nextStep.signUpStep === "COMPLETE_AUTO_SIGN_IN") {
+    const { nextStep: signInStep } = await autoSignIn()
+    if (signInStep.signInStep === "DONE") {
+      notifyChanged()
+      return true
+    }
+  }
+  // Came from the login form (no auto sign-in pending): log in with the password we have.
+  if (password) return (await logIn(email, password)) === "done"
+  return false
+}
+
+export async function resendCode(email: string) {
+  ensureConfigured()
+  await resendSignUpCode({ username: email })
+}
+
+export async function logOut() {
+  ensureConfigured()
+  await signOut()
+  notifyChanged()
+}
+
+// Called when the API rejects the token (401).
+export function clearSession() {
+  if (!config) return
+  ensureConfigured()
+  signOut()
+    .catch(() => {})
+    .finally(notifyChanged)
 }

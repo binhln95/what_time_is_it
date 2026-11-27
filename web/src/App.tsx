@@ -21,7 +21,8 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Toaster } from "@/components/ui/sonner"
 import { useSession } from "@/hooks/use-session"
-import { login } from "@/lib/auth"
+import { navigate, useHashRoute } from "@/hooks/use-hash-route"
+import { AuthPage } from "@/components/auth/auth-page"
 import { config } from "@/lib/config"
 
 const FEATURES = [
@@ -61,10 +62,19 @@ function SignInCard() {
             </div>
           ))}
         </div>
-        <Button className="w-fit" onClick={login} disabled={!config}>
-          <SignInIcon data-icon="inline-start" />
-          Log in or sign up
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={() => navigate("#/signup")} disabled={!config}>
+            Create account
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => navigate("#/login")}
+            disabled={!config}
+          >
+            <SignInIcon data-icon="inline-start" />
+            Log in
+          </Button>
+        </div>
       </CardContent>
     </Card>
   )
@@ -91,6 +101,18 @@ function MissingConfig() {
 
 export function App() {
   const { session, ready } = useSession()
+  const route = useHashRoute()
+  const authRoute =
+    route === "#/login" ? "login" : route === "#/signup" ? "signup" : null
+
+  if (authRoute && ready && !session) {
+    return (
+      <>
+        <AuthPage initial={authRoute} />
+        <Toaster position="top-center" />
+      </>
+    )
+  }
 
   return (
     <div className="min-h-svh">

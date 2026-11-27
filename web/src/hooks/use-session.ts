@@ -3,7 +3,7 @@ import type { Session } from "@/lib/auth"
 
 export interface SessionState {
   session: Session | null
-  ready: boolean // false while the login redirect is being processed
+  ready: boolean // false until the stored session has been loaded
 }
 
 export const SessionContext = createContext<SessionState | undefined>(undefined)

@@ -17,7 +17,8 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { useTheme } from "@/components/theme-provider"
 import { useSession } from "@/hooks/use-session"
-import { login, logout } from "@/lib/auth"
+import { logOut } from "@/lib/auth"
+import { navigate } from "@/hooks/use-hash-route"
 import { config } from "@/lib/config"
 
 function ThemeToggle() {
@@ -73,14 +74,17 @@ export function AppHeader() {
                   <div className="truncate">{session.email}</div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={logout}>
+                <DropdownMenuItem onSelect={() => logOut()}>
                   <SignOutIcon />
                   Log out
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           ) : (
-            <Button onClick={login} disabled={!ready || !config}>
+            <Button
+              onClick={() => navigate("#/login")}
+              disabled={!ready || !config}
+            >
               <SignInIcon data-icon="inline-start" />
               Log in
             </Button>

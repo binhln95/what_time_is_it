@@ -3,7 +3,7 @@
 
 export interface AppConfig {
   apiUrl: string
-  cognitoDomain: string
+  userPoolId: string
   userPoolClientId: string
 }
 
