@@ -80,6 +80,7 @@ All routes except `/time` need `Authorization: Bearer <Cognito ID token>`.
 ```bash
 GET  /time?lat=1.29&lon=103.85   # time at a location -> Asia/Singapore, +08:00
 GET  /time?tz=Asia/Ho_Chi_Minh   # time in a timezone
+GET  /time                       # no parameters: located by the caller's IP -> source "ip", ip, location
 GET  /favorites
 PUT  /favorites      {"timezones": ["Asia/Tokyo", "Europe/London"]}
 POST /meetings       {"title": "Sprint review", "start": "2026-12-01T10:00", "timezone": "Asia/Ho_Chi_Minh",
